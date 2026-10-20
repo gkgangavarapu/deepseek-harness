@@ -3,6 +3,12 @@ name: Package Desktop · macOS
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: '构建目标：mac-arm64 使用 Apple Silicon runner，mac-x64 使用 Intel runner；两者产物、发布目录与升级源相互独立'
+        type: choice
+        options: [mac-arm64, mac-x64]
+        default: mac-arm64
+        required: true
       preset:
         description: '打包环境：选择机器上的 test 或 production 配置；同时决定后续发布环境'
         type: choice
@@ -60,6 +66,8 @@ jobs:
       PACKAGE_SKIP_NOTARIZATION: ${{ inputs.skip_notarization }}
       PACKAGE_SOURCE_REF: ${{ inputs.source_ref }}
       PACKAGE_VERSION_MODE: ${{ inputs.version_mode }}
+      DSH_DESKTOP_TARGET_PLATFORM: darwin
+      DSH_DESKTOP_TARGET_ARCH: ${{ inputs.target == 'mac-x64' && 'x64' || 'arm64' }}
       DSH_DESKTOP_UPDATE_CHANNEL: ${{ inputs.update_channel }}
       DSH_TELEMETRY_DISABLED: '1'
       DSH_PACKAGING_PRESET: ${{ inputs.preset }}
@@ -88,7 +96,8 @@ jobs:
           const branch=cp.execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{encoding:'utf8'}).trim();
           if(branch==='HEAD' || branch!==ref || ref.startsWith('refs/')) throw Error('Select a branch in this repository, not a SHA or PR ref');
           }
-          if(!fs.readFileSync('apps/desktop/scripts/desktop-ci-version.mjs','utf8').includes('PACKAGE_VERSION_MODE')) throw Error('Source lacks Desktop channel/version CI support; select a newer release');"
+          if(!fs.readFileSync('apps/desktop/scripts/desktop-ci-version.mjs','utf8').includes('PACKAGE_VERSION_MODE')) throw Error('Source lacks Desktop channel/version CI support; select a newer release');
+          if(!fs.readFileSync('apps/desktop/scripts/prepare-macos-ci.mjs','utf8').includes('package:desktop:mac:x64')) throw Error('Source lacks Desktop macOS target selection; select a newer release');"
       - uses: pnpm/action-setup@v5.0.0
         with:
           dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}
@@ -108,14 +117,14 @@ jobs:
         run: |
           args=()
           if [[ "$PACKAGE_SKIP_NOTARIZATION" = true ]]; then args+=(--skip-notarization); fi
-          pnpm run package:desktop:mac:arm64 --check --build-version "$PACKAGE_VERSION" "${args[@]}"
+          pnpm run ${{ steps.settings.outputs.package_script }} --check --build-version "$PACKAGE_VERSION" "${args[@]}"
       - name: Build signed installers
         env:
           PACKAGE_VERSION: ${{ steps.settings.outputs.version }}
         run: |
           args=()
           if [[ "$PACKAGE_SKIP_NOTARIZATION" = true ]]; then args+=(--skip-notarization); fi
-          pnpm run package:desktop:mac:arm64 --build-version "$PACKAGE_VERSION" "${args[@]}"
+          pnpm run ${{ steps.settings.outputs.package_script }} --build-version "$PACKAGE_VERSION" "${args[@]}"
       - name: Retain complete package outside the checkout
         id: retained
         env:
@@ -135,7 +144,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: macos-arm64-${{ steps.settings.outputs.mode }}-${{ steps.settings.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: macos-${{ steps.settings.outputs.arch }}-${{ steps.settings.outputs.mode }}-${{ steps.settings.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
           include-hidden-files: true
           path: ${{ steps.retained.outputs.directory }}/*
           if-no-files-found: error

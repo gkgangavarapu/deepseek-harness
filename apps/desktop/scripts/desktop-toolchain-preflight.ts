@@ -69,19 +69,48 @@ async function probeWindowsInstallerToolchain(environment: NodeJS.ProcessEnv): P
 }
 
 /**
+ * Decide whether a thin x64 macOS payload needs the host's Rosetta translation.
+ * @param platform - Target platform.
+ * @param arch - Target architecture.
+ * @param hostArch - Architecture of the build host.
+ * @returns True when an x64 macOS target builds on an arm64 host.
+ */
+export function requiresRosetta(platform: 'darwin' | 'win32', arch: 'arm64' | 'x64', hostArch: string): boolean {
+  return platform === 'darwin' && arch === 'x64' && hostArch === 'arm64'
+}
+
+async function probeRosetta(): Promise<string | undefined> {
+  // macOS runs the thin x64 toolchain through Rosetta; a missing installation fails minutes into the build otherwise.
+  try {
+    await run('arch', ['-x86_64', '/usr/bin/true'], { timeout: 20_000 })
+    return undefined
+  }
+  catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    return `${detail}; install it with: softwareupdate --install-rosetta --agree-to-license`
+  }
+}
+
+/**
  * Probe every external tool one packaging run needs.
  * @param platform - Target platform; a Windows target already requires a Windows build host.
  * @param environment - Packaging environment used to locate Windows tooling.
+ * @param arch - Target architecture; an x64 macOS target on an arm64 host also needs Rosetta.
  * @returns Every probe that failed, empty when the host can run the packaging sequence.
  */
 export async function probeDesktopToolchain(
   platform: 'darwin' | 'win32',
   environment: NodeJS.ProcessEnv = process.env,
+  arch: 'arm64' | 'x64' = process.arch === 'x64' ? 'x64' : 'arm64',
 ): Promise<readonly DesktopToolchainProbeFailure[]> {
   const failures: DesktopToolchainProbeFailure[] = []
   const tar = await probeTar()
   if (tar !== undefined) failures.push({ tool: 'tar', detail: tar })
   if (platform === 'win32') failures.push(...await probeWindowsInstallerToolchain(environment))
+  if (requiresRosetta(platform, arch, process.arch)) {
+    const rosetta = await probeRosetta()
+    if (rosetta !== undefined) failures.push({ tool: 'rosetta', detail: rosetta })
+  }
   return failures
 }
 
@@ -89,13 +118,15 @@ export async function probeDesktopToolchain(
  * Probe the toolchain and fail with every problem the host has.
  * @param platform - Target platform; a Windows target already requires a Windows build host.
  * @param environment - Packaging environment used to locate Windows tooling.
+ * @param arch - Target architecture; an x64 macOS target on an arm64 host also needs Rosetta.
  * @returns Resolves when every probe passes.
  */
 export async function requireDesktopToolchain(
   platform: 'darwin' | 'win32',
   environment: NodeJS.ProcessEnv = process.env,
+  arch: 'arm64' | 'x64' = process.arch === 'x64' ? 'x64' : 'arm64',
 ): Promise<void> {
-  const failures = await probeDesktopToolchain(platform, environment)
+  const failures = await probeDesktopToolchain(platform, environment, arch)
   if (failures.length === 0) return
   throw new Error(`desktop package: the build host cannot run this packaging sequence:\n${
     failures.map(failure => `  ${failure.tool}: ${failure.detail}`).join('\n')}`)

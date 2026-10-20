@@ -33,7 +33,17 @@ it('routes a Windows package through its own configured machine target', () => {
   f.run.path = '.github/workflows/windows-package.yml'
   const routes = { mini: { label: 'dsh-windows', target: 'win-x64' } }
   expect(selectDesktopPackage('owner/repo', { package_run_id: '42' }, routes, f.api)).toMatchObject({ runnerLabel: 'dsh-windows' })
-  expect(() => selectDesktopPackage('owner/repo', { package_run_id: '42' }, f.routes, f.api)).toThrow(/no configured/u)
+  expect(() => selectDesktopPackage('owner/repo', { package_run_id: '42' }, f.routes, f.api)).toThrow(/does not match the packaging workflow/u)
+})
+
+it('routes one machine that builds both macOS targets', () => {
+  const f = fixture()
+  const routes = { mini: { label: 'dsh-mini', targets: ['mac-arm64', 'mac-x64'] } }
+  expect(selectDesktopPackage('owner/repo', { package_run_id: '42' }, routes, f.api)).toMatchObject({ runnerLabel: 'dsh-mini' })
+  expect(() => selectDesktopPackage('owner/repo', { package_run_id: '42' },
+    { mini: { label: 'dsh-mixed', targets: ['mac-arm64', 'win-x64'] } }, f.api)).toThrow(/one platform/u)
+  expect(() => selectDesktopPackage('owner/repo', { package_run_id: '42' },
+    { mini: { label: 'dsh-windows', targets: ['win-x64'] } }, f.api)).toThrow(/does not match the packaging workflow/u)
 })
 
 it('selects an explicit old attempt without consulting the latest attempt', () => {

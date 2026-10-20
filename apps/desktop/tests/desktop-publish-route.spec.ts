@@ -8,7 +8,7 @@ function fixture() {
     workflowCommit: run.head_sha, sourceRef: 'master', channel: 'nightly',
     target: 'mac-arm64', preset: 'test', publishRequested: true, qualification: 'notarized' }
   const jobs = [{ name: 'package', runner_name: 'mini', conclusion: 'success', labels: ['self-hosted', 'dsh-mini'] }]
-  const routes = { mini: { label: 'dsh-mini', target: 'mac-arm64' } }
+  const routes: Record<string, unknown> = { mini: { label: 'dsh-mini', target: 'mac-arm64' } }
   return { run, source, jobs, routes }
 }
 
@@ -16,6 +16,28 @@ it('routes the exact successful attempt to its registered machine', () => {
   const f = fixture()
   expect(resolveDesktopPublishRoute('owner/repo', f.run, { source: f.source }, f.jobs, f.routes))
     .toMatchObject({ runId: '42', attempt: '2', runnerLabel: 'dsh-mini', preset: 'test' })
+})
+
+it('lets one machine publish both macOS targets it built', () => {
+  const f = fixture()
+  f.source.target = 'mac-x64'
+  f.routes['mini'] = { label: 'dsh-mini', targets: ['mac-arm64', 'mac-x64'] }
+  expect(resolveDesktopPublishRoute('owner/repo', f.run, { source: f.source }, f.jobs, f.routes))
+    .toMatchObject({ runnerLabel: 'dsh-mini', target: 'mac-x64' })
+})
+
+it('rejects a target the original machine does not build', () => {
+  const f = fixture()
+  f.source.target = 'mac-x64'
+  expect(() => resolveDesktopPublishRoute('owner/repo', f.run, { source: f.source }, f.jobs, f.routes))
+    .toThrow(/not configured for this target/u)
+})
+
+it('rejects a machine configured for two platforms', () => {
+  const f = fixture()
+  f.routes['mini'] = { label: 'dsh-mini', targets: ['mac-arm64', 'win-x64'] }
+  expect(() => resolveDesktopPublishRoute('owner/repo', f.run, { source: f.source }, f.jobs, f.routes))
+    .toThrow(/one platform/u)
 })
 
 it.each(['test', 'production'])('explains how to rebuild debugging packages for %s', (preset) => {

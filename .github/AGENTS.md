@@ -4,4 +4,6 @@ Run jobs on Windows runners (`windows-*` labels) under native `pwsh`. Native Win
 
 The manual [Windows packaging workflow](workflows/windows-package.yml) uses the dedicated self-hosted Windows x64 label `dsh-win-package-trial` under native `pwsh`; preserve this routing separately from the automatic CI lanes.
 
+The manual [macOS packaging workflow](workflows/macos-package.yml) builds either `mac-arm64` or `mac-x64` from its `target` input on the one self-hosted Apple Silicon label `dsh-mac-package-trial`. The x64 payload builds through Rosetta, so that machine may list both targets in its `DESKTOP_PUBLISH_RUNNERS` route.
+
 The manual Desktop publication workflow selects a successful package run and attempt, then routes each retained build through `DESKTOP_PUBLISH_RUNNERS` to its original machine's unique label. Keep Windows run steps on native PowerShell and Mac run steps on the default POSIX shell; shared entrypoints are Node scripts. Test and production jobs use separate `desktop-test` and `desktop-production` approval Environments after a credential-free preparation job.

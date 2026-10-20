@@ -9,7 +9,7 @@ import {
   readDesktopBuildCommit,
   resolveDesktopBuildCommit,
 } from '../scripts/desktop-build-commit.mjs'
-import { probeDesktopToolchain } from '../scripts/desktop-toolchain-preflight.ts'
+import { probeDesktopToolchain, requiresRosetta } from '../scripts/desktop-toolchain-preflight.ts'
 
 const COMMIT = '0123456789abcdef0123456789abcdef01234567'
 const directories: string[] = []
@@ -48,6 +48,13 @@ describe('desktop build commit', () => {
 })
 
 describe('desktop toolchain preflight', () => {
+  it('requires Rosetta only for an x64 macOS payload on an arm64 host', () => {
+    expect(requiresRosetta('darwin', 'x64', 'arm64')).toBe(true)
+    expect(requiresRosetta('darwin', 'x64', 'x64')).toBe(false)
+    expect(requiresRosetta('darwin', 'arm64', 'arm64')).toBe(false)
+    expect(requiresRosetta('win32', 'x64', 'arm64')).toBe(false)
+  })
+
   it('passes on a host that can read archives', async () => {
     expect(await probeDesktopToolchain('darwin', {})).toEqual([])
   })

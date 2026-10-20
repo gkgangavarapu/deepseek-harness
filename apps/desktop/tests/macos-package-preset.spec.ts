@@ -78,12 +78,17 @@ it('records debugging artifact paths only for an explicit CI selection without n
     ].join('\n'))
     const output = join(root, 'output')
     const summary = join(root, 'summary')
-    const run = (skip: string) => spawnSync(process.execPath,
+    const run = (skip: string, extra: Record<string, string> = {}) => spawnSync(process.execPath,
       [join(import.meta.dirname, '../scripts/prepare-macos-ci.mjs')], { encoding: 'utf8', env: {
         ...process.env, DSH_PACKAGING_CONFIG_DIR: root, DSH_PACKAGING_PRESET: 'test',
+        DSH_DESKTOP_TARGET_PLATFORM: 'darwin', DSH_DESKTOP_TARGET_ARCH: 'arm64',
         PACKAGE_SKIP_NOTARIZATION: skip, PACKAGE_BUILD_VERSION: 'auto',
         GITHUB_RUN_NUMBER: '1', GITHUB_RUN_ATTEMPT: '1', GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary,
+        ...extra,
       } })
+    const missingTarget = run('false', { DSH_DESKTOP_TARGET_ARCH: '' })
+    expect(missingTarget.status).toBe(1)
+    expect(missingTarget.stderr).toContain('Select a macOS build target architecture')
     const missingCredentials = run('false')
     expect(missingCredentials.status).toBe(1)
     expect(missingCredentials.stderr).toContain('macOS packaging requires APPLE_API_KEY')
@@ -94,7 +99,15 @@ it('records debugging artifact paths only for an explicit CI selection without n
     expect(debugging.stderr).toBe('')
     expect(debugging.status).toBe(0)
     expect(await readFile(output, 'utf8')).toContain('artifacts=unnotarized-artifacts\nmode=unnotarized-debug\n')
+    expect(await readFile(output, 'utf8')).toContain('arch=arm64\ntarget=mac-arm64\n')
+    expect(await readFile(output, 'utf8')).toContain('package_script=package:desktop:mac:arm64\n')
     expect(await readFile(summary, 'utf8')).toContain('Internal debugging only')
+    const intel = run('true', { DSH_DESKTOP_TARGET_ARCH: 'x64' })
+    expect(intel.stderr).toBe('')
+    expect(intel.status).toBe(0)
+    expect(await readFile(output, 'utf8')).toContain('arch=x64\ntarget=mac-x64\n')
+    expect(await readFile(output, 'utf8')).toContain('package_script=package:desktop:mac:x64\n')
+    expect(await readFile(summary, 'utf8')).toContain('macOS x64 signed installer')
   } finally {
     await rm(root, { recursive: true, force: true })
   }
