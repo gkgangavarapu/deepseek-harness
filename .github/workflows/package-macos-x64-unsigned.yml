@@ -1,0 +1,143 @@
+name: Build macOS x64 DMG (unsigned)
+
+# Unsigned / unnotarized x64 DMG built on a free arm64 runner with Rosetta 2.
+# Deliberately bypasses the machine-preset flow (DSH_PACKAGING_PRESET) that the
+# upstream macOS workflow needs, because that flow reads dotenv presets and a
+# p12 signing key that live only on the self-hosted packaging machine.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or tag to build'
+        type: string
+        default: feat/desktop-macos-x64-ci
+        required: true
+  push:
+    branches: [feat/desktop-macos-x64-ci]
+    paths:
+      - .github/workflows/package-macos-x64-unsigned.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-x64-unsigned
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 240
+    env:
+      DSH_TELEMETRY_DISABLED: '1'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      DSH_DESKTOP_MACOS_PACK_CONCURRENCY: '3'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref_name }}
+          persist-credentials: false
+          clean: true
+          fetch-depth: 1
+
+      - name: Reclaim disk space
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf \
+            /Users/runner/Library/Caches/Homebrew \
+            /Users/runner/Library/Developer/Xcode/DerivedData \
+            /Users/runner/Library/Caches/org.swift.swiftpm \
+            /Library/Developer/CoreSimulator/Caches \
+            /Applications/Xcode_16*.app 2>/dev/null || true
+          df -h /
+
+      - name: Install Rosetta 2
+        run: sudo softwareupdate --install-rosetta --agree-to-license || true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v5.0.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build unsigned mac-x64 DMG
+        run: pnpm --dir apps/desktop run package:mac:x64:unsigned
+
+      - name: Locate DMG
+        id: dmg
+        run: |
+          set -euo pipefail
+          root=apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts
+          dmg=$(find "$root" -maxdepth 1 -type f -name '*.dmg' | head -n 1)
+          if [ -z "$dmg" ]; then
+            echo "::error::no DMG under $root"
+            find apps/desktop/.desktop-build -type f -name '*.dmg' || true
+            exit 1
+          fi
+          echo "path=$dmg" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$dmg")" >> "$GITHUB_OUTPUT"
+          echo "Built $dmg" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload packaging logs
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: macos-package-logs-${{ github.run_id }}
+          include-hidden-files: true
+          path: apps/desktop/.desktop-build/packaging-runs/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload DMG as workflow artifact
+        if: success()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dmg-mac-x64-unsigned-r${{ github.run_number }}
+          include-hidden-files: true
+          path: ${{ steps.dmg.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish Release asset
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DMG_PATH: ${{ steps.dmg.outputs.path }}
+          DMG_NAME: ${{ steps.dmg.outputs.name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="dmg-mac-x64-unsigned-r${GITHUB_RUN_NUMBER}"
+          cat > notes.md <<'NOTES'
+          Unsigned macOS x64 build of DeepSeek Harness.
+
+          **Unsigned and unnotarized.** macOS Gatekeeper will refuse the first launch.
+          After dragging the app to /Applications, either right-click it and choose
+          **Open**, or run:
+
+          ```
+          xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness.app"
+          ```
+
+          No auto-update feed is embedded: the unsigned packaging path strips every
+          release setting, so this build will not track the `latest` or `nightly`
+          channel and cannot self-update.
+
+          Built on a free `macos-15` arm64 runner with Rosetta 2 via
+          `pnpm --dir apps/desktop run package:mac:x64:unsigned`.
+          NOTES
+          printf '\nSource: `%s`\n' "$SOURCE_SHA" >> notes.md
+          gh release create "$tag" "$DMG_PATH" \
+            --repo "${{ github.repository }}" \
+            --title "$DMG_NAME" \
+            --prerelease \
+            --notes-file notes.md
