@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 240
     env:
       DSH_TELEMETRY_DISABLED: '1'
@@ -132,7 +132,7 @@ jobs:
           release setting, so this build will not track the `latest` or `nightly`
           channel and cannot self-update.
 
-          Built on a free `macos-15` arm64 runner with Rosetta 2 via
+          Built on a free `macos-26` arm64 runner with Rosetta 2 via
           `pnpm --dir apps/desktop run package:mac:x64:unsigned`.
           NOTES
           printf '\nSource: `%s`\n' "$SOURCE_SHA" >> notes.md
