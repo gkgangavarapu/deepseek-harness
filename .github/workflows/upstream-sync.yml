@@ -1,0 +1,49 @@
+name: Track upstream release
+
+# Keeps this fork in step with deepseek-ai/deepseek-harness's newest release:
+#   stable  a clean mirror of the newest upstream release tag (dsh-v*)
+#   intel   stable plus this fork's Intel (x86_64) macOS build workflow and
+#           docs (the default branch)
+#
+# Runs daily and on demand. It pushes branches with the workflow token, so it
+# needs no secrets; the only external code it runs is actions/checkout and
+# scripts/sync-upstream-stable.sh in this repository.
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Report the newest upstream release without changing branches
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out intel
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: intel
+          fetch-depth: 0
+      - name: Move stable to the newest upstream release and merge it into intel
+        env:
+          DRY_RUN: ${{ inputs.dry-run && '1' || '' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Attribute merge commits to the fork owner's noreply address, so a
+          # fork with "block command line pushes that expose my email" enabled
+          # still accepts them.
+          owner_id=$(gh api "repos/$GITHUB_REPOSITORY" --jq .owner.id)
+          SYNC_EMAIL="${owner_id}+${GITHUB_REPOSITORY_OWNER}@users.noreply.github.com" \
+            scripts/sync-upstream-stable.sh

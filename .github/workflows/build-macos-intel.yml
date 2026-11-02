@@ -1,0 +1,142 @@
+name: Build Intel macOS app
+
+# Manual only. Builds the unsigned, ad-hoc-signed Intel (x86_64) DeepSeek
+# Harness macOS app and DMG on GitHub's standard x64 macOS 26 runner, then
+# attaches them to a release in this fork named
+# "DeepSeek Harness <version> (Intel)" (tag intel-v<version>).
+#
+# The default ref is `latest`: the newest published release on
+# deepseek-ai/deepseek-harness, resolved when the workflow starts. Pass a
+# commit, branch, or tag to build something else. This workflow is never
+# scheduled; it runs only when asked.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'latest (newest upstream release), or a commit, branch, or tag'
+        required: true
+        default: latest
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-macos-intel
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Standard GitHub-hosted x64 runner: native x86_64 Node and Electron, so
+    # the x64 packaging needs no Rosetta and matches the machine the app runs on.
+    runs-on: macos-26-intel
+    timeout-minutes: 240
+    env:
+      DSH_TELEMETRY_DISABLED: '1'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      DSH_DESKTOP_MACOS_PACK_CONCURRENCY: '3'
+    steps:
+      - name: Resolve the newest upstream release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag=$(gh api 'repos/deepseek-ai/deepseek-harness/releases?per_page=30' \
+            --jq '[.[] | select(.draft == false)] | sort_by(.published_at) | last | .tag_name')
+          if [ -z "$tag" ] || [ "$tag" = null ]; then
+            echo "::error::could not resolve the newest deepseek-ai/deepseek-harness release"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#dsh-v}" >> "$GITHUB_OUTPUT"
+          echo "Building newest upstream release $tag" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check out the build ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref == 'latest' && steps.release.outputs.tag || inputs.ref }}
+          persist-credentials: false
+          clean: true
+      - name: Confirm this is an Intel runner
+        run: |
+          [ "$(uname -m)" = x86_64 ] || { echo "::error::expected an x86_64 runner, got $(uname -m)"; exit 1; }
+          xcrun --sdk macosx --show-sdk-version
+      - name: Reclaim disk space
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf \
+            /Users/runner/Library/Caches/Homebrew \
+            /Users/runner/Library/Developer/Xcode/DerivedData \
+            /Users/runner/Library/Caches/org.swift.swiftpm \
+            /Library/Developer/CoreSimulator/Caches \
+            /Applications/Xcode_1[0-5]*.app 2>/dev/null || true
+          df -h /
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v5.0.0
+      - name: Set up Node
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build the unsigned Intel DMG
+        run: pnpm --dir apps/desktop run package:mac:x64:unsigned
+      - name: Locate the DMG and write checksums
+        id: dmg
+        run: |
+          set -euo pipefail
+          root=apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts
+          dmg=$(find "$root" -maxdepth 1 -type f -name '*.dmg' | head -n 1)
+          if [ -z "$dmg" ]; then
+            echo "::error::no DMG under $root"
+            find apps/desktop/.desktop-build -type f -name '*.dmg' || true
+            exit 1
+          fi
+          directory=$(dirname "$dmg")
+          (cd "$directory" && shasum -a 256 "$(basename "$dmg")" > SHA256SUMS)
+          echo "path=$dmg" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$dmg")" >> "$GITHUB_OUTPUT"
+          echo "sums=$directory/SHA256SUMS" >> "$GITHUB_OUTPUT"
+          echo "Built $dmg" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload packaging logs
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: macos-intel-package-logs-${{ github.run_id }}
+          include-hidden-files: true
+          path: apps/desktop/.desktop-build/packaging-runs/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Attach the DMG to a release in this fork
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "JSON.parse(require('node:fs').readFileSync('apps/desktop/package.json','utf8')).version")
+          if [ "${{ inputs.ref }}" = latest ] && [ "$version" != "${{ steps.release.outputs.version }}" ]; then
+            echo "::error::checked-out version $version does not match newest release ${{ steps.release.outputs.tag }}"
+            exit 1
+          fi
+          tag="intel-v$version"
+          dmg="${{ steps.dmg.outputs.path }}"
+          sums="${{ steps.dmg.outputs.sums }}"
+          source=$(git rev-parse HEAD)
+          notes="Intel (x86_64) macOS build of DeepSeek Harness $version, built from \`$source\` on GitHub's macos-26-intel runner.
+
+          Unsigned and not notarized. Open the DMG, drag DeepSeek Harness.app to Applications, then right-click the app -> Open the first time.
+
+          This build never auto-updates: the unsigned packaging path strips every release setting, so install a newer intel-v* release to update.
+
+          Upstream release: [\`dsh-v$version\`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v$version)."
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "$dmg" "$sums" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" "$dmg" "$sums" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$source" \
+              --title "DeepSeek Harness $version (Intel)" \
+              --notes "$notes"
+          fi
+          echo "### Intel DeepSeek Harness $version" >> "$GITHUB_STEP_SUMMARY"
+          echo "Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
